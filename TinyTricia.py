@@ -32,7 +32,6 @@ class TinyTricia(object):
     * _Best case_: For each key there is another key where only the rightmost bit differs.
     * _Worst case_: For no key there is another key where only the rightmost bit differs.
 
-    
     __Limitations__
     Only keys with a fixed length are stored, thus only leaf nodes will contain a full key. 
     Ints are used for the keys, thus the algorithm will require a little-endian machine 
@@ -259,21 +258,25 @@ class TinyTricia(object):
 
     def _idCompact(self, nodeVal, isRight):
         #
-        # return key in COMPACT_MODE
+        # Returns key (incl. LSB) and the two keyAvailable bits in COMPACT_MODE.
+        #
+        # The two keyAvailable bits need to be included to make sure the ID is >0
+        # even if the key itself is 0 (to be able to distinguish "key=0" from "no key available"
+        # (see search()).
         #
         if (nodeVal >> 56 >> isRight) & 0x1:  # key is available
-            return ((nodeVal & 0xFFFFFFFFFFFFFF) << 1) + isRight  # set lowest bit on read
+            return ((nodeVal & 0x3FFFFFFFFFFFFFF) << 1) + isRight  # add lowest bit again
 
-        return 0
+        return 0  # no key available
 
     def _idRegular(self, nodeVal, isRight):
         return (nodeVal >> (isRight * 28)) & 0xFFFFFFF
 
     def _keyCompact(self, id):
         #
-        # in COMPACT_MODE the ID is already the key
+        # in COMPACT_MODE the ID is the key (incl. LSB) and including the two keyAvailable bits
         #
-        return id
+        return id & 0x1FFFFFFFFFFFFFF  # mask the full 57 bits of the key (includes LSB)
 
     def _keyRegular(self, id):
         #
@@ -299,7 +302,7 @@ class TinyTricia(object):
         id = len(self._keys) // self.NUM_BUCKETS
         assert (id <= 0xFFFFFFF)  # must fit into 28 bits
 
-        # add key parts according to bucket size (most significant bit first)
+        # add key parts according to bucket size (most significant bit in the first bucket)
         #
         for i in range(self.NUM_BUCKETS - 1, -1, -1):
             self._keys.append((key >> (i * self.BUCKET_SIZE)) & bitmask)  # first bucket may contain 'empty' bits
@@ -394,7 +397,6 @@ class TinyTricia(object):
             if not (nodeVal >> self.PREFIX_SHIFT):
                 otherKeyIsRight = 1 - (key & 0x1)
                 otherKey = self.key(self._id(nodeVal, otherKeyIsRight))
-                # REVIEW Actually, we only need the last bit of otherKey -> avoid assembling the whole key?
                 if (key ^ otherKey) == 1:  # only last bit different, i.e. we belong into the peer slot
                     if self.COMPACT_MODE:
                         #
