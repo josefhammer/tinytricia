@@ -10,6 +10,7 @@
 
 from array import array
 from collections import deque
+import pickle
 
 
 class TinyTricia(object):
@@ -58,13 +59,31 @@ class TinyTricia(object):
     # __leafNode__ int64 -- prefix (58..63), rightKeyAvail (57), leftKeyAvail (56), key(0..55) with LSB removed
     #
     __slots__ = [
-        "_head", "_nodes", "_keys", "_numBuckets", "_bucketSize", "_numKeys", "MAX_PREFIX", "KEYS_ONLY", "COMPACT_MODE",
+        "_head", "_nodes", "_keys", "_numKeys", "NUM_BUCKETS", "BUCKET_SIZE", "MAX_PREFIX", "KEYS_ONLY", "COMPACT_MODE",
         "PREFIX_SHIFT", "INDEX_SHIFT", "INDEX_MASK", "_data", "_id", "key"
     ]
 
     def __init__(self, numBits=32, keysOnly=False, minBucketSize=16):
 
         assert (numBits <= 256)  # 8 bits space for the prefix only
+
+        self._initConsts(numBits, keysOnly, minBucketSize)
+
+        self._nodes = self._createArrayWithBitsPerItem(64)  # uint64
+        self._nodes.append(0)  # fake root node to speed up loops and allow nullptr
+        self._head = 0  # position of initial root element
+        self._numKeys = 0
+        self._keys = None
+        self._data = None
+
+        if not self.COMPACT_MODE:
+            self._keys = self._createArrayWithBitsPerItem(self.BUCKET_SIZE)
+            self._data = []  # pointers to the data objects
+            self._addKey(0, None)  # key/data no. zero == key/data not available (nullptr)
+            self._numKeys = 0  # set back to zero after dummy key no. zero (prev line)
+
+    def _initConsts(self, numBits, keysOnly, minBucketSize):
+
         self.MAX_PREFIX = numBits
         self.KEYS_ONLY = keysOnly
         self.COMPACT_MODE = numBits <= 57 and keysOnly
@@ -74,10 +93,7 @@ class TinyTricia(object):
         self.INDEX_SHIFT = 29 if self.COMPACT_MODE else 28
         self.INDEX_MASK = 0x1FFFFFFF if self.COMPACT_MODE else 0xFFFFFFF
 
-        self._nodes = self._createArrayWithBitsPerItem(64)  # uint64
-        self._nodes.append(0)  # fake root node to speed up loops and allow nullptr
-        self._head = 0  # position of initial root element
-        self._numKeys = 0
+        self.NUM_BUCKETS, self.BUCKET_SIZE = self._calcBucketSize(numBits, minBucketSize)
 
         if self.COMPACT_MODE:
             self._id = self._idCompact
@@ -86,17 +102,11 @@ class TinyTricia(object):
             self._id = self._idRegular
             self.key = self._keyRegular
 
-            self._numBuckets, self._bucketSize = self._calcBucketSize(numBits, minBucketSize)
-            self._keys = self._createArrayWithBitsPerItem(self._bucketSize)
-            self._data = []  # pointers to the data objects
-            self._addKey(0, None)  # key/data no. zero == key/data not available (nullptr)
-            self._numKeys = 0  # set back to zero after dummy key no. zero (prev line)
-
     def numNodes(self):
         return len(self._nodes) - 1
 
     def numKeys(self):
-        return self._numKeys  # without COMPACT_MODE: (len(self._keys) // self._numBuckets) - 1
+        return self._numKeys  # without COMPACT_MODE: (len(self._keys) // self.NUM_BUCKETS) - 1
 
     def contains(self, key):
         return self.search(key)[3]  # [3] ... isFound
@@ -126,6 +136,39 @@ class TinyTricia(object):
         Adds or sets a key and the given data value.
         """
         return self._set(key, data)
+
+    def save(self, filename):
+        """
+        Saves the current state / Patricia Tree to a file.
+        """
+        with open(filename, 'wb') as handle:
+
+            pickle.dump("v1", handle, protocol=pickle.HIGHEST_PROTOCOL)
+            for item in [
+                    self.MAX_PREFIX, self.KEYS_ONLY, self.BUCKET_SIZE, self._head, self._numKeys, self._nodes,
+                    self._keys, self._data
+            ]:
+                pickle.dump(item, handle, protocol=pickle.HIGHEST_PROTOCOL)
+
+    def load(self, filename):
+        """
+        Loads a previously saved state of this object from a file.
+        """
+        with open(filename, 'rb') as handle:
+
+            version = pickle.load(handle)
+            assert (version == "v1")
+
+            MAX_PREFIX = pickle.load(handle)
+            KEYS_ONLY = pickle.load(handle)
+            bucketSize = pickle.load(handle)
+            self._initConsts(MAX_PREFIX, KEYS_ONLY, bucketSize)
+
+            self._head = pickle.load(handle)
+            self._numKeys = pickle.load(handle)
+            self._nodes = pickle.load(handle)
+            self._keys = pickle.load(handle)
+            self._data = pickle.load(handle)
 
     def __len__(self):
         return self.numKeys()
@@ -237,9 +280,9 @@ class TinyTricia(object):
         # put the key together from its buckets
         #
         result = 0
-        id *= self._numBuckets  # calculcate position of first bucket
-        for i in range(0, self._numBuckets):
-            result = (result << self._bucketSize) + self._keys[id + i]
+        id *= self.NUM_BUCKETS  # calculcate position of first bucket
+        for i in range(0, self.NUM_BUCKETS):
+            result = (result << self.BUCKET_SIZE) + self._keys[id + i]
         return result
 
     def _addKey(self, key, data):
@@ -252,14 +295,14 @@ class TinyTricia(object):
             #
             return key
 
-        bitmask = (1 << (self._bucketSize)) - 1  # bitmask for a single bucket
-        id = len(self._keys) // self._numBuckets
+        bitmask = (1 << (self.BUCKET_SIZE)) - 1  # bitmask for a single bucket
+        id = len(self._keys) // self.NUM_BUCKETS
         assert (id <= 0xFFFFFFF)  # must fit into 28 bits
 
         # add key parts according to bucket size (most significant bit first)
         #
-        for i in range(self._numBuckets - 1, -1, -1):
-            self._keys.append((key >> (i * self._bucketSize)) & bitmask)  # first bucket may contain 'empty' bits
+        for i in range(self.NUM_BUCKETS - 1, -1, -1):
+            self._keys.append((key >> (i * self.BUCKET_SIZE)) & bitmask)  # first bucket may contain 'empty' bits
 
         if not self.KEYS_ONLY:
             self._data.append(data)
