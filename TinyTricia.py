@@ -59,7 +59,7 @@ class TinyTricia(object):
     #
     __slots__ = [
         "_head", "_nodes", "_keys", "_numKeys", "NUM_BUCKETS", "BUCKET_SIZE", "MAX_PREFIX", "KEYS_ONLY", "COMPACT_MODE",
-        "PREFIX_SHIFT", "INDEX_SHIFT", "INDEX_MASK", "_data", "_id", "key"
+        "PREFIX_SHIFT", "INDEX_SHIFT", "INDEX_MASK", "_data", "_id", "key", "keysMatch"
     ]
 
     def __init__(self, numBits=32, keysOnly=False, minBucketSize=16):
@@ -97,9 +97,11 @@ class TinyTricia(object):
         if self.COMPACT_MODE:
             self._id = self._idCompact
             self.key = self._keyCompact
+            self.keysMatch = self._keysMatchCompact
         else:
             self._id = self._idRegular
             self.key = self._keyRegular
+            self.keysMatch = self._keysMatchRegular
 
     def numNodes(self):
         return len(self._nodes) - 1
@@ -219,7 +221,7 @@ class TinyTricia(object):
 
         # If we hit a nullptr (pos == 0, e.g. empty root), we did not find anything and id will be 0.
         #
-        return parents, pos, id, id and key == self.key(id)  # parent, index, id, isFound
+        return parents, pos, id, id and self.keysMatch(key, id)  # parent, index, id, isFound
 
     ### Private methods below ##########################################################################################
 
@@ -287,6 +289,27 @@ class TinyTricia(object):
         for i in range(0, self.NUM_BUCKETS):
             result = (result << self.BUCKET_SIZE) + self._keys[id + i]
         return result
+
+    def _keysMatchCompact(self, key, id):
+        """
+        Checks if the given `key` matches the one identified by `id`.
+        See _keyCompact().
+        """
+        return key == (id & 0x1FFFFFFFFFFFFFF)
+
+    def _keysMatchRegular(self, key, id):
+        """
+        Checks if the given `key` matches the one identified by `id`.
+        Avoids assembling the whole key, but checks only as many buckets as necessary.
+        """
+        bitmask = (1 << (self.BUCKET_SIZE)) - 1  # bitmask for a single bucket
+        id *= self.NUM_BUCKETS  # calculcate position of first bucket
+
+        for i in range(self.NUM_BUCKETS - 1, -1, -1):
+            if self._keys[id + i] != (key & bitmask):
+                return False
+            key >>= self.BUCKET_SIZE
+        return True
 
     def _addKey(self, key, data):
 
