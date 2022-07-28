@@ -8,6 +8,7 @@
 # Source: https://github.com/josefhammer/tinytricia
 #
 
+from __future__ import annotations
 from array import array
 from collections import deque
 import pickle
@@ -112,11 +113,27 @@ class TinyTricia(object):
     def contains(self, key):
         return self.search(key)[3]  # [3] ... isFound
 
-    def containsFirstNBits(self, key) -> int:
+    def containsFirstNBits(self, key) -> tuple[int, list[int]]:
+        """
+        Returns (n, prefixes); (0,[]) if tree is empty.
+        
+        :param n: The closest key shares the first `n` bits with the given `key`.
+        :param prefixes: The parent prefixes at which the closest key is attached (until incl. prefix `n`).
+        """
 
         if not self._head:  # diffPos == 0 --> would return MAX_PREFIX
-            return 0
-        return (self.MAX_PREFIX - self._diffPos(key)[3] - 1)
+            return 0, []
+        parents, _, _, diffPos = self._diffPos(key)
+
+        firstN = (self.MAX_PREFIX - diffPos - 1)  # diffPos needs to be fixed by 1 (see _diffPos())
+
+        # Calculate parent prefixes (and remove first parent (fake 0)).
+        # NOTE: Can't slice a deque, thus easier to remove first parent _after_ the list comprehension.
+        #
+        prefixes = [self.MAX_PREFIX - (self._nodes[parent] >> self.PREFIX_SHIFT) for parent in parents][1:]
+        prefixes = [prefix for prefix in prefixes if prefix <= firstN]  # remove all entries > firstN
+
+        return firstN, prefixes
 
     def add(self, key):
         """
@@ -374,8 +391,8 @@ class TinyTricia(object):
 
     def _diffPos(self, key):
         """
-        Returns the prefix at which the key should be inserted into the Patricia trie.
-        Returns -1 if `key` exists in the tree (exact match).
+        Returns (parents, node, id, diffPos), with diffPos being the prefix at which the key should be inserted into the Patricia
+        trie. Returns -1 for diffPos if `key` exists in the tree (exact match).
         """
 
         # Find the location where the item should be inserted
